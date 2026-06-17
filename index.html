@@ -395,6 +395,15 @@
             overflow: hidden;
         }
 
+        .movie-poster-placeholder img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+
         .movie-poster-placeholder::after {
             content: '';
             position: absolute;
@@ -1326,11 +1335,14 @@
 
                 // Derive poster background letters or movie initials
                 const initials = movie.title ? movie.title.split(" ").map(n => n[0]).join("").substring(0, 2).toUpperCase() : "🎬";
+                const posterHtml = movie.poster_path 
+                    ? `<img src="https://image.tmdb.org/t/p/w200${movie.poster_path}" alt="${escapeHtml(movie.title)}">` 
+                    : `<span>${escapeHtml(initials)}</span>`;
 
                 return `
                     <div class="movie-card">
                         <div class="movie-poster-placeholder" aria-hidden="true">
-                            <span>${escapeHtml(initials)}</span>
+                            ${posterHtml}
                         </div>
                         <div class="movie-info">
                             <div class="movie-title-row">
@@ -1389,11 +1401,14 @@
 
                 const initials = movie.title ? movie.title.split(" ").map(n => n[0]).join("").substring(0, 2).toUpperCase() : "🎬";
                 const safeTitle = escapeHtml(movie.title).replace(/'/g, "\\'");
+                const posterHtml = movie.poster_path 
+                    ? `<img src="https://image.tmdb.org/t/p/w200${movie.poster_path}" alt="${escapeHtml(movie.title)}">` 
+                    : `<span>${escapeHtml(initials)}</span>`;
 
                 return `
                     <div class="movie-card">
                         <div class="movie-poster-placeholder" aria-hidden="true">
-                            <span>${escapeHtml(initials)}</span>
+                            ${posterHtml}
                         </div>
                         <div class="movie-info">
                             <div class="movie-title-row">
