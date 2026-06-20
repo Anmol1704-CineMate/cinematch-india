@@ -913,11 +913,138 @@
         footer a:hover {
             color: var(--color-primary);
         }
+
+        /* Welcome Overlay Styling */
+        .welcome-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background-color: var(--bg-base);
+            background-image: 
+                radial-gradient(circle at 50% 30%, rgba(229, 9, 20, 0.15) 0%, transparent 50%),
+                radial-gradient(circle at 50% 100%, rgba(18, 18, 32, 0.8) 0%, transparent 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            padding: 1.5rem;
+            transition: opacity 0.4s ease;
+        }
+        
+        .welcome-card {
+            background: rgba(18, 18, 32, 0.6);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            padding: 3rem 2.5rem;
+            width: 100%;
+            max-width: 440px;
+            box-shadow: var(--shadow-lg), 0 0 80px rgba(229, 9, 20, 0.1);
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1.5rem;
+            animation: welcome-appear 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+        }
+
+        @keyframes welcome-appear {
+            from {
+                opacity: 0;
+                transform: translateY(30px) scale(0.95);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+        }
+
+        .welcome-logo {
+            font-size: 3.5rem;
+            filter: drop-shadow(0 0 15px rgba(229, 9, 20, 0.4));
+            animation: welcome-pulse 3s ease-in-out infinite;
+        }
+
+        @keyframes welcome-pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.08); }
+        }
+
+        .welcome-title {
+            font-family: var(--font-display);
+            font-size: 2.2rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #ffffff 40%, var(--text-secondary) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -1px;
+        }
+
+        .welcome-subtitle {
+            font-size: 1rem;
+            color: var(--text-secondary);
+            max-width: 280px;
+            line-height: 1.4;
+        }
+
+        .welcome-form {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            margin-top: 0.5rem;
+        }
+
+        .welcome-form input {
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 1rem 1.25rem;
+            color: var(--text-primary);
+            font-family: var(--font-body);
+            font-size: 1.05rem;
+            width: 100%;
+            text-align: center;
+            transition: all 0.3s;
+        }
+
+        .welcome-form input:focus {
+            outline: none;
+            border-color: var(--color-primary);
+            box-shadow: 0 0 15px rgba(229, 9, 20, 0.2);
+            background: rgba(0, 0, 0, 0.6);
+        }
+
+        .welcome-form button {
+            width: 100%;
+            padding: 1rem;
+            font-size: 1.05rem;
+            background: linear-gradient(135deg, var(--color-primary) 0%, #a8000a 100%);
+            box-shadow: 0 4px 20px rgba(229, 9, 20, 0.4);
+        }
     </style>
 </head>
 <body>
 
-    <div class="app-container">
+    <!-- Welcome Screen Overlay -->
+    <div id="welcomeOverlay" class="welcome-overlay" style="display: none;">
+        <div class="welcome-card">
+            <span class="welcome-logo">🎬</span>
+            <h1 class="welcome-title">CineMatch India</h1>
+            <p class="welcome-subtitle">Your personal Indian cinema guide</p>
+            <div class="welcome-form">
+                <input type="text" id="welcomeUsername" placeholder="Enter your name" maxlength="25">
+                <button id="btnStartWatching" class="btn-submit">
+                    <span>Start Watching</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="app-container" id="appContainer" style="display: none;">
         <!-- Header -->
         <header>
             <a href="#" class="brand">
@@ -925,21 +1052,24 @@
                 <h1>CineMatch India</h1>
             </a>
             
-            <div class="user-profile">
-                <button class="user-badge" id="userBadge" aria-haspopup="true" aria-expanded="false">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                        <circle cx="12" cy="7" r="4"></circle>
-                    </svg>
-                    <span id="userIdDisplay">guest_xxxxxx</span>
-                </button>
-                
-                <div class="user-dropdown" id="userDropdown">
-                    <h3>User Profile</h3>
-                    <p>Enter a User ID to load personalized recommendations for that profile.</p>
-                    <div class="user-input-group">
-                        <input type="text" id="userInputId" placeholder="e.g., user_123" maxlength="25">
-                        <button id="btnSaveUserId">Save</button>
+            <div style="display: flex; align-items: center; gap: 1rem;">
+                <span id="welcomeMessage" style="font-size: 0.95rem; font-weight: 500; color: var(--text-secondary);"></span>
+                <div class="user-profile">
+                    <button class="user-badge" id="userBadge" aria-haspopup="true" aria-expanded="false">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                            <circle cx="12" cy="7" r="4"></circle>
+                        </svg>
+                        <span id="userIdDisplay">guest_xxxxxx</span>
+                    </button>
+                    
+                    <div class="user-dropdown" id="userDropdown">
+                        <h3>User Profile</h3>
+                        <p>Enter a User ID to load personalized recommendations for that profile.</p>
+                        <div class="user-input-group">
+                            <input type="text" id="userInputId" placeholder="e.g., user_123" maxlength="25">
+                            <button id="btnSaveUserId">Save</button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1118,9 +1248,11 @@
             "ngrok-skip-browser-warning": "true" // Bypass ngrok security interposer pages
         };
 
+        // JavaScript variable called currentUser
+        let currentUser = localStorage.getItem("currentUser") || "";
+
         // State Management
         let appState = {
-            userId: "",
             moviesList: [],        // Holds local list of 50 movie definitions
             selectedLabel: "",    // Holds rating choice ("Like", "Dislike", etc.)
             activeAutocompleteIndex: -1
@@ -1143,24 +1275,31 @@
 
         // Initialization
         window.addEventListener("DOMContentLoaded", () => {
-            initUserId();
+            const welcomeOverlay = document.getElementById("welcomeOverlay");
+            const appContainer = document.getElementById("appContainer");
+            
+            // Check if username already exists
+            if (currentUser) {
+                welcomeOverlay.style.display = "none";
+                appContainer.style.display = "flex";
+                updateWelcomeMessage(currentUser);
+                fetchRecommendations();
+            } else {
+                welcomeOverlay.style.display = "flex";
+                appContainer.style.display = "none";
+            }
             fetchMovies();
-            fetchRecommendations();
             setupEventListeners();
         });
 
-        // Initialize User ID (load from localStorage or create random)
-        function initUserId() {
-            let id = localStorage.getItem("cinematch_user_id");
-            if (!id) {
-                // Generate safe random user string
-                const rand = Math.floor(100000 + Math.random() * 900000);
-                id = `user_${rand}`;
-                localStorage.setItem("cinematch_user_id", id);
+        // Update welcome message and UI state
+        function updateWelcomeMessage(name) {
+            const welcomeSpan = document.getElementById("welcomeMessage");
+            if (welcomeSpan) {
+                welcomeSpan.textContent = `Welcome, ${name}!`;
             }
-            appState.userId = id;
-            userIdDisplay.textContent = id;
-            userInputId.value = id;
+            userIdDisplay.textContent = name;
+            userInputId.value = name;
         }
 
         // Add Toast Message
@@ -1271,8 +1410,8 @@
             btnRefreshRecs.classList.add("spinning");
             
             try {
-                // The backend currently has no custom queries in the OpenAPI file, but we append user_id anyway
-                const response = await fetch(`${API_BASE}/recommend?user_id=${encodeURIComponent(appState.userId)}`, { 
+                // Fetch recommendations with currentUser as user_id
+                const response = await fetch(`${API_BASE}/recommend?user_id=${encodeURIComponent(currentUser)}`, { 
                     headers: HEADERS 
                 });
                 
@@ -1475,13 +1614,40 @@
                 e.stopPropagation(); // Avoid closing dropdown when clicking inside it
             });
 
+            // Welcome screen Start Watching button handler
+            const btnStartWatching = document.getElementById("btnStartWatching");
+            const welcomeUsername = document.getElementById("welcomeUsername");
+            
+            btnStartWatching.addEventListener("click", () => {
+                const name = welcomeUsername.value.trim();
+                if (name) {
+                    currentUser = name;
+                    localStorage.setItem("currentUser", name);
+                    
+                    document.getElementById("welcomeOverlay").style.display = "none";
+                    document.getElementById("appContainer").style.display = "flex";
+                    
+                    updateWelcomeMessage(name);
+                    fetchRecommendations();
+                    showToast(`Welcome to CineMatch India, ${name}!`, "success");
+                } else {
+                    showToast("Please enter your name to start", "error");
+                }
+            });
+
+            welcomeUsername.addEventListener("keypress", (e) => {
+                if (e.key === "Enter") {
+                    btnStartWatching.click();
+                }
+            });
+
             // Save new user profile ID
             btnSaveUserId.addEventListener("click", () => {
                 const newId = userInputId.value.trim();
                 if (newId) {
-                    appState.userId = newId;
-                    localStorage.setItem("cinematch_user_id", newId);
-                    userIdDisplay.textContent = newId;
+                    currentUser = newId;
+                    localStorage.setItem("currentUser", newId);
+                    updateWelcomeMessage(newId);
                     userBadge.setAttribute("aria-expanded", "false");
                     userDropdown.classList.remove("show");
                     showToast(`Switched user context to: ${newId}`, "success");
@@ -1690,7 +1856,7 @@
             const backendLabel = labelMapping[appState.selectedLabel] || appState.selectedLabel;
 
             const payload = {
-                user_id: appState.userId,
+                user_id: currentUser,
                 movie: movieName,
                 label: backendLabel
             };
