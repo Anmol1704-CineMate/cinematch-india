@@ -160,6 +160,9 @@ def get_recommendations(user_id: str = "anmol_001"):
                 for genre in my_movies[movie_name]["genres"]:
                     if genre in user_taste:
                         match_score += user_taste[genre]
+                num_genres = len(my_movies[movie_name]["genres"])
+                if num_genres > 0:
+                    match_score = match_score / num_genres
                 result.append({
                     "title":       movie_name,
                     "genres":      my_movies[movie_name]["genres"],
