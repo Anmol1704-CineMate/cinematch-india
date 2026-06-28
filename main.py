@@ -1,40 +1,212 @@
-import os
-import json
+# ═══════════════════════════════════════════════════════
+# CINEMATCH INDIA — CLEAN NOTEBOOK
+# Cell 1: Startup
+# ═══════════════════════════════════════════════════════
+
+import subprocess
+subprocess.run(["pip", "install", "firebase-admin", "-q"])
+subprocess.run(["pip", "install", "fastapi", "-q"])
+subprocess.run(["pip", "install", "uvicorn", "-q"])
+subprocess.run(["pip", "install", "pyngrok", "-q"])
+
+import numpy as np
+import pandas as pd
 import requests
+from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine
 import firebase_admin
 from firebase_admin import credentials, firestore
-from groq import Groq
+from google.colab import drive
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+print("All libraries imported!")
+
 # ── API Keys ──────────────────────────────────────────
-TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+TMDB_API_KEY = "950551e0b37cd664fa188ec51a5a20d6"
 
-client = Groq(api_key=GROQ_API_KEY)
+# ── Mount Drive & Connect Firebase ───────────────────
+drive.mount("/content/drive")
 
-# ── Firebase Setup ────────────────────────────────────
 if not firebase_admin._apps:
-    firebase_key_json = os.environ.get("FIREBASE_KEY")
-    firebase_key_dict = json.loads(firebase_key_json)
-    cred = credentials.Certificate(firebase_key_dict)
+    cred = credentials.Certificate("/content/drive/MyDrive/Cinemate/cinemate-a6e29-firebase-adminsdk-fbsvc-0c072c5e46.json")
     firebase_admin.initialize_app(cred)
 
 db = firestore.client()
+print("Firebase connected!")
 
-# ── Load Movies From Firebase ─────────────────────────
-def load_movies():
-    movies = {}
-    docs = db.collection("movies").stream()
-    for doc in docs:
-        movies[doc.id] = doc.to_dict()
-    print(f"Loaded {len(movies)} movies from Firebase")
-    return movies
 
-my_movies = load_movies()
 
-# ── FastAPI App ───────────────────────────────────────
+
+# ── Load Movies from Firebase ─────────────────────────
+my_movies = {}
+docs = db.collection("movies").stream()
+
+for doc in docs:
+    data = doc.to_dict()
+    title = data.get("title", doc.id)
+    my_movies[title] = {
+        "genres":      data.get("genres", []),
+        "rating":      data.get("rating", 5.0),
+        "year":        int(data.get("year", 2000)),
+        "poster_path": data.get("poster_path", "")
+    }
+
+print(f"Loaded {len(my_movies)} movies from Firebase!")
+# ── Build Movie Fingerprints ──────────────────────────
+
+# Step 1: Find all unique genres
+all_unique_genres_set = set()
+for name, data in my_movies.items():
+    for genre in data["genres"]:
+        all_unique_genres_set.add(genre)
+all_unique_genres = sorted(all_unique_genres_set)
+
+# Step 2: Normalise ratings (min-max)
+all_ratings_list = [data["rating"] for name, data in my_movies.items()]
+min_rating       = min(all_ratings_list)
+max_rating       = max(all_ratings_list)
+
+# Step 3: Normalise years (min-max)
+all_years_list = [data["year"] for name, data in my_movies.items()]
+min_year       = min(all_years_list)
+max_year       = max(all_years_list)
+
+# Step 4: Build fingerprints
+movies_vector = {}
+for i, (movie_name, data) in enumerate(my_movies.items()):
+    genre_vector = []
+    for genre in all_unique_genres:
+        if genre in data["genres"]:
+            genre_vector.append(1)
+        else:
+            genre_vector.append(0)
+
+    if max_rating == min_rating:
+        norm_rating = 0.5
+    else:
+        norm_rating = (data["rating"] - min_rating) / (max_rating - min_rating)
+
+    if max_year == min_year:
+        norm_year = 0.5
+    else:
+        norm_year = (data["year"] - min_year) / (max_year - min_year)
+
+    movies_vector[movie_name] = genre_vector + [norm_rating] + [norm_year]
+
+print(f"Fingerprints built! Each movie has {len(list(movies_vector.values())[0])} features.")
+#Block 5
+
+
+# ── Build Similarity Matrix ───────────────────────────
+movie_names   = list(movies_vector.keys())
+matrix        = list(movies_vector.values())
+sim_matrix    = sklearn_cosine(matrix)
+df_similarity = pd.DataFrame(sim_matrix, index=movie_names, columns=movie_names)
+
+print(f"Similarity matrix built! Shape: {df_similarity.shape}")
+
+
+
+
+#Block 6
+
+# ── User-Item Matrix ──────────────────────────────────
+
+# Step 1: Pull ratings from Firebase
+all_ratings_data = []
+ratings_ref = db.collection("ratings").stream()
+
+for doc in ratings_ref:
+    data = doc.to_dict()
+    if "user_id" not in data or "movie" not in data or "score" not in data:
+        continue
+    all_ratings_data.append({
+        "user":   data["user_id"],
+        "movie":  data["movie"],
+        "rating": data["score"]
+    })
+
+print(f"Total ratings found: {len(all_ratings_data)}")
+
+# Step 2: Build User-Item Matrix
+df_ratings       = pd.DataFrame(all_ratings_data)
+user_item_matrix = df_ratings.pivot_table(index="user", columns="movie", values="rating")
+
+# Step 3: Keep only real users
+real_users       = ["Anmol", "Om", "Om M", "Palindrome", "TestUser", "anmol_001"]
+user_item_matrix = user_item_matrix.loc[real_users]
+
+print(f"Matrix shape: {user_item_matrix.shape}")
+print("Startup complete! Ready to recommend. 🎬")
+#ML In Recommendations
+
+# ═══════════════════════════════════════════════════════
+# CELL 2 — ML Functions
+# ═══════════════════════════════════════════════════════
+
+def build_user_profile(username, df_matrix, movies_vector):
+    if username not in df_matrix.index:
+        print(f"User '{username}' not found.")
+        return None
+
+    user_ratings = df_matrix.loc[username]
+    rated_movies = user_ratings.dropna()
+
+    if len(rated_movies) == 0:
+        print(f"User '{username}' has no ratings.")
+        return None
+
+    profile_vector = None
+
+    for movie, rating in rated_movies.items():
+        if movie in movies_vector:
+            fingerprint = movies_vector[movie]
+            weighted = [x * rating for x in fingerprint]
+
+            if profile_vector is None:
+                profile_vector = weighted
+            else:
+                profile_vector = [profile_vector[i] + weighted[i] for i in range(len(weighted))]
+
+    profile_vector = [x / len(rated_movies) for x in profile_vector]
+
+    return profile_vector
+
+def recommend_for_user(username, profile, df_matrix, movies_vector, top_n=5):
+    if profile is None:
+        return []
+
+    user_ratings = df_matrix.loc[username]
+    already_rated = set(user_ratings.dropna().index)
+
+    scores = []
+
+    for movie, fingerprint in movies_vector.items():
+        if movie in already_rated:
+            continue
+
+        dot_product = sum(profile[i] * fingerprint[i] for i in range(len(profile)))
+        magnitude_profile = sum(x**2 for x in profile) ** 0.5
+        magnitude_movie   = sum(x**2 for x in fingerprint) ** 0.5
+
+        if magnitude_profile == 0 or magnitude_movie == 0:
+            similarity = 0
+        else:
+            similarity = dot_product / (magnitude_profile * magnitude_movie)
+
+        scores.append((movie, similarity))
+
+    scores.sort(key=lambda x: x[1], reverse=True)
+    return scores[:top_n]
+# ═══════════════════════════════════════════════════════
+# CELL 3 — FastAPI
+# ═══════════════════════════════════════════════════════
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
 app = FastAPI()
 
 app.add_middleware(
@@ -45,143 +217,70 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Helper Functions ──────────────────────────────────
-def fetch_movie(movie_id):
-    response = requests.get(
-        f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={TMDB_API_KEY}"
-    )
-    data = response.json()
-    genres_list = [genre["name"] for genre in data.get("genres", [])]
-    return {
-        "title":       data["title"],
-        "year":        data["release_date"][:4],
-        "rating":      data["vote_average"],
-        "genres":      genres_list,
-        "language":    data["original_language"],
-        "poster_path": data.get("poster_path", "")
-    }
+print("FastAPI app created!")
 
-def search_movie(query):
-    response = requests.get(
-        f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&query={query}"
-    )
-    data = response.json()
-    results = []
-    for movie in data["results"][:5]:
-        results.append({
-            "id":    movie["id"],
-            "title": movie["title"],
-            "year":  movie.get("release_date", "")[:4]
-        })
-    return results
 
-def rate_movie(user_id, movie_name, label):
-    label_map = {
-        "SUPERB":      "Loved it",
-        "MASTERPIECE": "Loved it",
-        "LOVE":        "Liked it",
-        "LIKE":        "Liked it",
-        "MEH":         "Neutral",
-        "DISLIKE":     "Didn't like",
-        "HATED":       "Hated it",
-    }
-    label = label_map.get(label.upper(), label)
-    scores = {
-        "Loved it":    2,
-        "Liked it":    1,
-        "Neutral":     0,
-        "Didn't like": -1,
-        "Hated it":   -2,
-        "Not watched": None
-    }
-    return {
-        "user_id": user_id,
-        "movie":   movie_name,
-        "label":   label,
-        "score":   scores.get(label, 0)
-    }
 
-def add_and_rate(user_id, movie_query, label):
-    results    = search_movie(movie_query)
-    movie_id   = results[0]["id"]
-    movie_name = results[0]["title"]
+#CELL 3 - Block 2
 
-    my_movies[movie_name] = fetch_movie(movie_id)
-
-    rating = rate_movie(user_id, movie_name, label)
-
-    doc_id = user_id + "_" + movie_name
-    db.collection("ratings").document(doc_id).set(rating)
-
-    return movie_name
-
-# ── Endpoints ─────────────────────────────────────────
-@app.get("/")
-def home():
-    return {"message": "CineMatch India is alive!"}
 
 @app.get("/movies")
 def get_movies():
-    movies_list = []
-    for name in my_movies:
-        movies_list.append({
-            "title":       name,
-            "genres":      my_movies[name]["genres"],
-            "year":        my_movies[name]["year"],
-            "poster_path": my_movies[name].get("poster_path", "")
-        })
-    return {"movies": movies_list, "total": len(movies_list)}
+    movies_ref = db.collection("movies").stream()
+    movies = []
+    for doc in movies_ref:
+        movies.append(doc.to_dict())
+    return {"movies": movies}
 
 @app.get("/recommend")
-def get_recommendations(user_id: str = "anmol_001"):
-    try:
-        user_ratings = []
-        docs = db.collection("ratings").where("user_id", "==", user_id).stream()
-        for doc in docs:
-            user_ratings.append(doc.to_dict())
+def get_recommendations(username: str):
+    # Step 1: Fetch ratings from Firebase
+    ratings_ref = db.collection("ratings").stream()
+    all_ratings = {}
 
-        user_taste = {}
-        for rating in user_ratings:
-            score = rating["score"]
-            if score is None:
-                continue
-            genres = my_movies.get(rating["movie"], {}).get("genres", [])
-            for genre in genres:
-                if genre not in user_taste:
-                    user_taste[genre] = 0
-                user_taste[genre] += score
+    for doc in ratings_ref:
+        data = doc.to_dict()
+        user = data.get("user_id")
+        movie = data.get("movie")
+        score = data.get("score")
 
-        already_rated = [r["movie"] for r in user_ratings]
+        if user not in all_ratings:
+            all_ratings[user] = {}
+        all_ratings[user][movie] = score
 
-        result = []
-        for movie_name in my_movies:
-            if movie_name not in already_rated:
-                match_score = 0
-                for genre in my_movies[movie_name]["genres"]:
-                    if genre in user_taste:
-                        match_score += user_taste[genre]
-                num_genres = len(my_movies[movie_name]["genres"])
-                if num_genres > 0:
-                    match_score = match_score / num_genres
-                result.append({
-                    "title":       movie_name,
-                    "genres":      my_movies[movie_name]["genres"],
-                    "match":       match_score,
-                    "poster_path": my_movies[movie_name].get("poster_path", "")
-                })
+    # Step 2: Build User-Item Matrix
+    df_matrix = pd.DataFrame(all_ratings).T
+    df_matrix.index.name = "user"
+    df_matrix.columns.name = "movie"
 
-        result = sorted(result, key=lambda x: x["match"], reverse=True)
-        return {"recommendations": result[:5], "user_id": user_id}
+    # Step 3: Check onboarding
+    if username not in df_matrix.index or df_matrix.loc[username].notna().sum() < 3:
+        return {"status": "onboarding"}
 
-    except Exception as e:
-        return {"error": str(e), "recommendations": []}
+    # Step 4: Build profile and recommend
+    profile = build_user_profile(username, df_matrix, movies_vector)
+    recommendations = recommend_for_user(username, profile, df_matrix, movies_vector)
 
-class RatingInput(BaseModel):
-    user_id: str
-    movie:   str
-    label:   str
-
+    return {"status": "ok", "recommendations": recommendations[:5]}
 @app.post("/rate")
-def submit_rating(data: RatingInput):
-    movie_name = add_and_rate(data.user_id, data.movie, data.label)
-    return {"status": "saved", "movie": movie_name}
+def rate_movie(username: str, movie: str, rating: int):
+    db.collection("ratings").document(username).set(
+        {movie: rating},
+        merge=True
+    )
+    return {"status": "ok", "message": f"Rating saved for {movie}"}
+import uvicorn
+from pyngrok import ngrok
+import nest_asyncio
+import asyncio
+
+nest_asyncio.apply()
+
+ngrok.set_auth_token("3FBEaL9gtGx9ikvmxumPppqefd0_2HrQiTufA8oWubBYb8wG9")
+
+public_url = ngrok.connect(8000)
+print(f"Public URL: {public_url}")
+
+config = uvicorn.Config(app, host="0.0.0.0", port=8000)
+server = uvicorn.Server(config)
+asyncio.get_event_loop().run_until_complete(server.serve())
