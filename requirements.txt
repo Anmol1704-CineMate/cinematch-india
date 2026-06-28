@@ -4,3 +4,8 @@ firebase-admin
 groq
 requests
 pydantic
+numpy
+pandas
+scikit-learn
+pyngrok
+nest_asyncio
