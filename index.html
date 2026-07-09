@@ -970,7 +970,8 @@
             try {
                 const response = await fetch(`${API_BASE}/onboarding`, {
                     headers: {
-                        'Accept': 'application/json'
+                        'Accept': 'application/json',
+                        'ngrok-skip-browser-warning': 'true'
                     }
                 });
                 if (!response.ok) {
@@ -1104,7 +1105,8 @@
                     return fetch(`${API_BASE}/rate`, {
                         method: "POST",
                         headers: {
-                            "Content-Type": "application/json"
+                            "Content-Type": "application/json",
+                            "ngrok-skip-browser-warning": "true"
                         },
                         body: JSON.stringify({
                             username: name,
@@ -1125,7 +1127,11 @@
                 // Step 2: Fetch recommendations
                 showLoading("Analyzing profile...", "Fetching your personalized recommendation matches");
                 
-                const recResponse = await fetch(`${API_BASE}/recommend?username=${encodeURIComponent(name)}`);
+                const recResponse = await fetch(`${API_BASE}/recommend?username=${encodeURIComponent(name)}`, {
+                    headers: {
+                        'ngrok-skip-browser-warning': 'true'
+                    }
+                });
                 if (!recResponse.ok) {
                     throw new Error(`Recommendations request failed: ${recResponse.status}`);
                 }
