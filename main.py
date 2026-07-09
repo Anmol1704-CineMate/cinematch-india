@@ -3,235 +3,303 @@ import json
 import numpy as np
 import pandas as pd
 import requests
-from sklearn.metrics.pairwise import cosine_similarity as skl_cosine
 import firebase_admin
 from firebase_admin import credentials, firestore
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
-# ── API Keys ──────────────────────────────────────────
-TMDB_API_KEY = os.environ.get("TMDB_API_KEY")
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from surprise import SVD, Dataset, Reader
 
 # ── Firebase Setup ────────────────────────────────────
-if not firebase_admin._apps:
-    firebase_key_json = os.environ.get("FIREBASE_KEY")
-    firebase_key_dict = json.loads(firebase_key_json)
-    cred = credentials.Certificate(firebase_key_dict)
-    firebase_admin.initialize_app(cred)
+firebase_key_json = os.environ.get("FIREBASE_KEY")
+if firebase_key_json:
+    try:
+        firebase_key_dict = json.loads(firebase_key_json)
+        cred = credentials.Certificate(firebase_key_dict)
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(cred)
+    except Exception as e:
+        print(f"Error initializing Firebase with key: {e}")
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app()
+else:
+    if not firebase_admin._apps:
+        try:
+            firebase_admin.initialize_app()
+        except Exception as e:
+            print(f"Firebase default initialization failed: {e}")
 
 db = firestore.client()
 
 # ── Load Movies ───────────────────────────────────────
 def load_movies():
-    docs = db.collection("movies").stream()
-    movies = {}
-    for doc in docs:
-        movies[doc.id] = doc.to_dict()
-    return movies
+    try:
+        docs = db.collection("movies").stream()
+        movies = {}
+        for doc in docs:
+            movies[doc.id] = doc.to_dict()
+        return movies
+    except Exception as e:
+        print(f"Error loading movies from Firestore: {e}")
+        return {}
 
 my_movies = load_movies()
 
-# ── Build Fingerprints ────────────────────────────────
-all_genres = sorted(set(g for m in my_movies.values() for g in m.get("genres", [])))
+# ── SVD Movie Factors Loading ─────────────────────────
+movie_factors = {}
+if os.path.exists("movie_factors.json"):
+    try:
+        with open("movie_factors.json", "r") as f:
+            movie_factors = json.load(f)
+        print("Loaded movie_factors.json from local file.")
+    except Exception as e:
+        print(f"Error loading local movie_factors.json: {e}")
 
-def build_fingerprint(movie):
-    genres = movie.get("genres", [])
-    genre_vector = [1 if g in genres else 0 for g in all_genres]
-    rating = movie.get("rating", 0)
-    year = int(movie.get("year", 2000))
-    min_r, max_r = 0, 10
-    min_y, max_y = 1990, 2024
-    norm_rating = (rating - min_r) / (max_r - min_r)
-    norm_year = (year - min_y) / (max_y - min_y)
-    return genre_vector + [norm_rating, norm_year]
+if not movie_factors and os.environ.get("MOVIE_FACTORS"):
+    try:
+        movie_factors = json.loads(os.environ.get("MOVIE_FACTORS"))
+        print("Loaded movie_factors from MOVIE_FACTORS env variable.")
+    except Exception as e:
+        print(f"Error loading MOVIE_FACTORS env variable: {e}")
 
-movies_vector = {title: build_fingerprint(m) for title, m in my_movies.items()}
+# ── Flickscore Ratings Loading ────────────────────────
+flickscore_ratings = []
+if os.path.exists("flickscore_ratings.json"):
+    try:
+        with open("flickscore_ratings.json", "r") as f:
+            flickscore_ratings = json.load(f)
+        print("Loaded flickscore_ratings.json from local file.")
+    except Exception as e:
+        print(f"Error loading local flickscore_ratings.json: {e}")
+elif os.path.exists("flickscore_ratings.csv"):
+    try:
+        df_flick = pd.read_csv("flickscore_ratings.csv")
+        flickscore_ratings = df_flick.to_dict(orient="records")
+        print("Loaded flickscore_ratings.csv from local file.")
+    except Exception as e:
+        print(f"Error loading local flickscore_ratings.csv: {e}")
 
-# ── ML Functions ──────────────────────────────────────
-def build_user_profile(username, df_matrix, movies_vector):
+if not flickscore_ratings and os.environ.get("FLICKSCORE_RATINGS"):
+    try:
+        flickscore_ratings = json.loads(os.environ.get("FLICKSCORE_RATINGS"))
+        print("Loaded flickscore_ratings from FLICKSCORE_RATINGS env variable.")
+    except Exception as e:
+        print(f"Error loading FLICKSCORE_RATINGS env variable: {e}")
+
+# ── Latent Factors Cosine Similarity Logic ────────────
+def build_user_profile_factors(username, df_matrix, movie_factors):
     if username not in df_matrix.index:
         return None
     user_ratings = df_matrix.loc[username]
     rated_movies = user_ratings.dropna()
     if len(rated_movies) == 0:
         return None
-    profile_vector = None
+    
+    first_key = next(iter(movie_factors.values()))
+    factor_length = len(first_key)
+    
+    profile_vector = np.zeros(factor_length)
+    valid_ratings_count = 0
+    
     for movie, rating in rated_movies.items():
-        if movie in movies_vector:
-            fingerprint = movies_vector[movie]
-            weighted = [x * rating for x in fingerprint]
-            if profile_vector is None:
-                profile_vector = weighted
-            else:
-                profile_vector = [profile_vector[i] + weighted[i] for i in range(len(weighted))]
-    profile_vector = [x / len(rated_movies) for x in profile_vector]
-    return profile_vector
+        if movie in movie_factors:
+            factors = np.array(movie_factors[movie])
+            profile_vector += factors * rating
+            valid_ratings_count += 1
+            
+    if valid_ratings_count == 0:
+        return None
+        
+    return profile_vector / valid_ratings_count
 
-def recommend_for_user(username, profile, df_matrix, movies_vector, top_n=10):
+def recommend_for_user_factors(username, profile, df_matrix, movie_factors, top_n=10):
     if profile is None:
         return []
     user_ratings = df_matrix.loc[username]
     already_rated = set(user_ratings.dropna().index)
+    
     scores = []
-    for movie, fingerprint in movies_vector.items():
-        if movie in already_rated:
+    profile_norm = np.linalg.norm(profile)
+    if profile_norm == 0:
+        return []
+        
+    for movie, factors in movie_factors.items():
+        if movie in already_rated or movie not in my_movies:
             continue
-        dot_product = sum(profile[i] * fingerprint[i] for i in range(len(profile)))
-        magnitude_profile = sum(x**2 for x in profile) ** 0.5
-        magnitude_movie = sum(x**2 for x in fingerprint) ** 0.5
-        if magnitude_profile == 0 or magnitude_movie == 0:
-            similarity = 0
-        else:
-            similarity = dot_product / (magnitude_profile * magnitude_movie)
+        movie_vector = np.array(factors)
+        movie_norm = np.linalg.norm(movie_vector)
+        if movie_norm == 0:
+            continue
+        
+        dot_product = np.dot(profile, movie_vector)
+        similarity = dot_product / (profile_norm * movie_norm)
         scores.append((movie, similarity))
+        
     scores.sort(key=lambda x: x[1], reverse=True)
     return scores[:top_n]
 
-# ── FastAPI ───────────────────────────────────────────
-app = FastAPI()
+# ── Surprise SVD Collaborative Filtering Logic ─────────
+def get_surprise_recommendations(username, all_ratings, top_n=10):
+    raw_data = []
+    for user, movies in all_ratings.items():
+        for movie, rating in movies.items():
+            raw_data.append((user, movie, rating))
+            
+    if not raw_data:
+        return []
+        
+    df = pd.DataFrame(raw_data, columns=["user", "item", "rating"])
+    reader = Reader(rating_scale=(-1, 1))
+    data = Dataset.load_from_df(df, reader)
+    trainset = data.build_full_trainset()
+    
+    algo = SVD()
+    algo.fit(trainset)
+    
+    user_ratings = all_ratings.get(username, {})
+    predictions = []
+    for movie in my_movies.keys():
+        if movie not in user_ratings:
+            pred = algo.predict(username, movie)
+            match_score = (pred.est + 1) / 2.0
+            predictions.append((movie, match_score))
+            
+    predictions.sort(key=lambda x: x[1], reverse=True)
+    return predictions[:top_n]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ── Flask Setup & Routing ─────────────────────────────
+app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
-print("FastAPI app created!")
+@app.route("/", methods=["GET"])
+def index():
+    return jsonify({
+        "status": "ok",
+        "message": "CineMatch India Flask API is active",
+        "has_movie_factors": len(movie_factors) > 0,
+        "has_flickscore_ratings": len(flickscore_ratings) > 0
+    })
 
-# ── Pydantic Request Models (Compatibility) ───────────
-class RatingInput(BaseModel):
-    username: str = None
-    user_id: str = None
-    movie: str = None
-    rating: int = None
-    label: str = None
-
-# ── Endpoints ─────────────────────────────────────────
-@app.get("/movies")
+@app.route("/movies", methods=["GET"])
 def get_movies():
-    movies_ref = db.collection("movies").stream()
-    movies = []
-    for doc in movies_ref:
-        movies.append(doc.to_dict())
-    return {"movies": movies}
+    global my_movies
+    movies_list = list(my_movies.values())
+    if not movies_list:
+        my_movies = load_movies()
+        movies_list = list(my_movies.values())
+    return jsonify({"movies": movies_list})
 
-@app.get("/recommend")
-def get_recommendations(username: str = None, user_id: str = None):
-    # Support both username (new code) and user_id (frontend/old code)
-    final_username = username or user_id
-    if not final_username:
-        return {"status": "error", "message": "username or user_id query parameter is required"}
+@app.route("/onboarding", methods=["GET"])
+def get_onboarding():
+    onboarding_list = [
+        "3 Idiots", "Sholay", "Dil Chahta Hai", 
+        "Lagaan: Once Upon a Time in India", "Queen", 
+        "Gangs of Wasseypur", "Taare Zameen Par", 
+        "Andaz Apna Apna", "Pink", "Rang De Basanti"
+    ]
+    return jsonify({"movies": onboarding_list})
 
-    ratings_ref = db.collection("ratings").stream()
-    all_ratings = {}
-    for doc in ratings_ref:
-        data = doc.to_dict()
-        user = data.get("user_id")
-        movie = data.get("movie")
-        score = data.get("score")
-        if user and movie and score is not None:
-            if user not in all_ratings:
-                all_ratings[user] = {}
-            all_ratings[user][movie] = score
-        
-    df_matrix = pd.DataFrame(all_ratings).T
-    df_matrix.index.name = "user"
-    df_matrix.columns.name = "movie"
-    
-    if final_username not in df_matrix.index or df_matrix.loc[final_username].notna().sum() < 3:
-        return {"status": "onboarding", "recommendations": []}
-        
-    profile = build_user_profile(final_username, df_matrix, movies_vector)
-    recommendations = recommend_for_user(final_username, profile, df_matrix, movies_vector, top_n=10)
-    
-    # Adapt recommendations to list of dicts matching frontend expectations
-    # The frontend expects a list of dicts with: title, genres, match, and poster_path
-    formatted_recs = []
-    for movie_title, score in recommendations[:10]:
-        movie_data = my_movies.get(movie_title, {})
-        formatted_recs.append({
-            "title": movie_title,
-            "genres": movie_data.get("genres", []),
-            "match": round(float(score), 2),  # Rounded score for display
-            "poster_path": movie_data.get("poster_path", "")
-        })
-        
-    return {"status": "ok", "recommendations": formatted_recs}
+@app.route("/rate", methods=["GET", "POST"])
+def rate_movie():
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        username = data.get("username") or data.get("user_id") or request.args.get("username")
+        movie = data.get("movie") or request.args.get("movie")
+        rating = data.get("rating")
+        if rating is None:
+            rating = request.args.get("rating")
+    else:
+        username = request.args.get("username") or request.args.get("user_id")
+        movie = request.args.get("movie")
+        rating = request.args.get("rating")
 
-def save_rating_internal(username: str, movie: str, rating: int):
     if not username or not movie:
-        return {"status": "error", "message": "Missing username or movie name"}
-    if rating is None:
-        rating = 0
-    db.collection("ratings").document(f"{username}_{movie}").set(
-        {"user_id": username, "movie": movie, "score": rating},
-        merge=True
-    )
-    return {"status": "ok", "message": f"Rating saved for {movie}"}
+        return jsonify({"status": "error", "message": "Missing username or movie name"}), 400
 
-@app.get("/rate")
-def rate_movie_get(username: str = None, movie: str = None, rating: int = None):
-    return save_rating_internal(username, movie, rating)
-
-@app.post("/rate")
-def rate_movie(
-    username: str = None, 
-    movie: str = None, 
-    rating: int = None, 
-    data: RatingInput = None
-):
-    # Retrieve values from either JSON body (data) or query parameters
-    final_username = username
-    final_movie = movie
-    final_rating = rating
-    
-    if data:
-        if not final_username:
-            final_username = data.username or data.user_id
-        if not final_movie:
-            final_movie = data.movie
-        if final_rating is None:
-            final_rating = data.rating
-            if final_rating is None and data.label:
-                # Map label to score
-                label_map = {
-                    "Loved it":    2,
-                    "Liked it":    1,
-                    "Neutral":     0,
-                    "Didn't like": -1,
-                    "Hated it":   -2,
-                }
-                direct_map = {
-                    "SUPERB": 2,
-                    "LOVE": 1,
-                    "LIKE": 1,
-                    "MEH": 0,
-                    "DISLIKE": -1,
-                }
-                final_rating = label_map.get(data.label)
-                if final_rating is None:
-                    final_rating = direct_map.get(data.label.upper(), 0)
-
-    return save_rating_internal(final_username, final_movie, final_rating)
-
-# ── Local Server Startup ──────────────────────────────
-if __name__ == "__main__":
     try:
-        import uvicorn
-        from pyngrok import ngrok
-        import nest_asyncio
-        import asyncio
+        rating_val = int(rating) if rating is not None else 0
+    except ValueError:
+        rating_val = 0
 
-        nest_asyncio.apply()
-        ngrok.set_auth_token("3FBEaL9gtGx9ikvmxumPppqefd0_2HrQiTufA8oWubBYb8wG9")
-        public_url = ngrok.connect(8000)
-        print(f"Public URL: {public_url}")
-
-        config = uvicorn.Config(app, host="0.0.0.0", port=8000)
-        server = uvicorn.Server(config)
-        asyncio.get_event_loop().run_until_complete(server.serve())
+    try:
+        db.collection("ratings").document(f"{username}_{movie}").set(
+            {"user_id": username, "movie": movie, "score": rating_val},
+            merge=True
+        )
+        return jsonify({"status": "ok", "message": f"Rating saved for {movie}"})
     except Exception as e:
-        print(f"Ngrok/Local server start error or bypass: {e}")
+        print(f"Error saving rating: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/recommend", methods=["GET"])
+def get_recommendations():
+    global my_movies
+    username = request.args.get("username") or request.args.get("user_id")
+    if not username:
+        return jsonify({"status": "error", "message": "username query parameter is required"}), 400
+
+    if not my_movies:
+        my_movies = load_movies()
+
+    try:
+        # Load all ratings from Firestore
+        ratings_ref = db.collection("ratings").stream()
+        all_ratings = {}
+
+        # 1. Seed with flickscore_ratings
+        if flickscore_ratings:
+            for r in flickscore_ratings:
+                user = r.get("user_id") or r.get("userId") or r.get("username")
+                movie = r.get("movie") or r.get("movieId") or r.get("title")
+                score = r.get("score") or r.get("rating")
+                if user and movie and score is not None:
+                    if user not in all_ratings:
+                        all_ratings[user] = {}
+                    all_ratings[user][movie] = float(score)
+
+        # 2. Overlay with live user ratings from Firestore
+        for doc in ratings_ref:
+            data = doc.to_dict()
+            user = data.get("user_id")
+            movie = data.get("movie")
+            score = data.get("score")
+            if user and movie and score is not None:
+                if user not in all_ratings:
+                    all_ratings[user] = {}
+                all_ratings[user][movie] = float(score)
+
+        # check user rating counts
+        user_ratings = all_ratings.get(username, {})
+        if len(user_ratings) < 3:
+            return jsonify({"status": "onboarding", "recommendations": []})
+
+        # Predict based on movie factors presence
+        recommendations = []
+        if movie_factors:
+            df_matrix = pd.DataFrame(all_ratings).T
+            df_matrix.index.name = "user"
+            df_matrix.columns.name = "movie"
+            profile = build_user_profile_factors(username, df_matrix, movie_factors)
+            recommendations = recommend_for_user_factors(username, profile, df_matrix, movie_factors, top_n=10)
+        else:
+            # Fall back to surprise SVD model
+            recommendations = get_surprise_recommendations(username, all_ratings, top_n=10)
+
+        # Format output
+        formatted_recs = []
+        for movie_title, score in recommendations[:10]:
+            movie_data = my_movies.get(movie_title, {})
+            formatted_recs.append({
+                "title": movie_title,
+                "genres": movie_data.get("genres", []),
+                "match": round(float(score), 2),
+                "poster_path": movie_data.get("poster_path", "")
+            })
+
+        return jsonify({"status": "ok", "recommendations": formatted_recs})
+
+    except Exception as e:
+        print(f"Error in recommendation logic: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))

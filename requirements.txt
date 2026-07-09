@@ -1,11 +1,8 @@
-fastapi
-uvicorn
+flask
+flask-cors
 firebase-admin
-groq
-requests
-pydantic
+scikit-surprise
 numpy
 pandas
-scikit-learn
-pyngrok
-nest_asyncio
+requests
+gunicorn
