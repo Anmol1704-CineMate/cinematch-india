@@ -1102,17 +1102,12 @@
             try {
                 // Submit all ratings in parallel
                 const submitPromises = ratingsToSubmit.map(([movieName, score]) => {
-                    return fetch(`${API_BASE}/rate`, {
-                        method: "POST",
+                    const url = `${API_BASE}/rate?username=${encodeURIComponent(name)}&movie=${encodeURIComponent(movieName)}&rating=${score}`;
+                    return fetch(url, {
+                        method: "GET",
                         headers: {
-                            "Content-Type": "application/json",
                             "ngrok-skip-browser-warning": "true"
-                        },
-                        body: JSON.stringify({
-                            username: name,
-                            movie: movieName,
-                            rating: score
-                        })
+                        }
                     }).then(res => {
                         if (!res.ok) {
                             throw new Error(`Failed to rate ${movieName}`);

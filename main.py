@@ -161,6 +161,7 @@ def get_recommendations(username: str = None, user_id: str = None):
         
     return {"status": "ok", "recommendations": formatted_recs}
 
+@app.get("/rate")
 @app.post("/rate")
 def rate_movie(
     username: str = None, 
