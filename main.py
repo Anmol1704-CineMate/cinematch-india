@@ -161,7 +161,21 @@ def get_recommendations(username: str = None, user_id: str = None):
         
     return {"status": "ok", "recommendations": formatted_recs}
 
+def save_rating_internal(username: str, movie: str, rating: int):
+    if not username or not movie:
+        return {"status": "error", "message": "Missing username or movie name"}
+    if rating is None:
+        rating = 0
+    db.collection("ratings").document(f"{username}_{movie}").set(
+        {"user_id": username, "movie": movie, "score": rating},
+        merge=True
+    )
+    return {"status": "ok", "message": f"Rating saved for {movie}"}
+
 @app.get("/rate")
+def rate_movie_get(username: str = None, movie: str = None, rating: int = None):
+    return save_rating_internal(username, movie, rating)
+
 @app.post("/rate")
 def rate_movie(
     username: str = None, 
@@ -201,17 +215,7 @@ def rate_movie(
                 if final_rating is None:
                     final_rating = direct_map.get(data.label.upper(), 0)
 
-    if not final_username or not final_movie:
-        return {"status": "error", "message": "Missing username or movie name"}
-        
-    if final_rating is None:
-        final_rating = 0
-
-    db.collection("ratings").document(f"{final_username}_{final_movie}").set(
-        {"user_id": final_username, "movie": final_movie, "score": final_rating},
-        merge=True
-    )
-    return {"status": "ok", "message": f"Rating saved for {final_movie}"}
+    return save_rating_internal(final_username, final_movie, final_rating)
 
 # ── Local Server Startup ──────────────────────────────
 if __name__ == "__main__":
