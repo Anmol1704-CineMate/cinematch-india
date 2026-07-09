@@ -68,7 +68,7 @@ def build_user_profile(username, df_matrix, movies_vector):
     profile_vector = [x / len(rated_movies) for x in profile_vector]
     return profile_vector
 
-def recommend_for_user(username, profile, df_matrix, movies_vector, top_n=5):
+def recommend_for_user(username, profile, df_matrix, movies_vector, top_n=10):
     if profile is None:
         return []
     user_ratings = df_matrix.loc[username]
@@ -145,12 +145,12 @@ def get_recommendations(username: str = None, user_id: str = None):
         return {"status": "onboarding", "recommendations": []}
         
     profile = build_user_profile(final_username, df_matrix, movies_vector)
-    recommendations = recommend_for_user(final_username, profile, df_matrix, movies_vector)
+    recommendations = recommend_for_user(final_username, profile, df_matrix, movies_vector, top_n=10)
     
     # Adapt recommendations to list of dicts matching frontend expectations
     # The frontend expects a list of dicts with: title, genres, match, and poster_path
     formatted_recs = []
-    for movie_title, score in recommendations[:5]:
+    for movie_title, score in recommendations[:10]:
         movie_data = my_movies.get(movie_title, {})
         formatted_recs.append({
             "title": movie_title,
