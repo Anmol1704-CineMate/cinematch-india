@@ -30,20 +30,6 @@ else:
 
 db = firestore.client()
 
-# ── Load Movies ───────────────────────────────────────
-def load_movies():
-    try:
-        docs = db.collection("movies").stream()
-        movies = {}
-        for doc in docs:
-            movies[doc.id] = doc.to_dict()
-        return movies
-    except Exception as e:
-        print(f"Error loading movies from Firestore: {e}")
-        return {}
-
-my_movies = load_movies()
-
 # ── SVD Movie Factors Loading ─────────────────────────
 movie_factors = {}
 if os.path.exists("movie_factors.json"):
@@ -60,6 +46,14 @@ if not movie_factors and os.environ.get("MOVIE_FACTORS"):
         print("Loaded movie_factors from MOVIE_FACTORS env variable.")
     except Exception as e:
         print(f"Error loading MOVIE_FACTORS env variable: {e}")
+
+# Build title_to_factors mapping
+title_to_factors = {}
+for imdb_id, info in movie_factors.items():
+    title = info.get("title")
+    factors = info.get("factors")
+    if title and factors:
+        title_to_factors[title.strip()] = factors
 
 # ── Flickscore Ratings Loading ────────────────────────
 flickscore_ratings = []
@@ -86,7 +80,7 @@ if not flickscore_ratings and os.environ.get("FLICKSCORE_RATINGS"):
         print(f"Error loading FLICKSCORE_RATINGS env variable: {e}")
 
 # ── Latent Factors Cosine Similarity Logic ────────────
-def build_user_profile_factors(username, df_matrix, movie_factors):
+def build_user_profile_factors(username, df_matrix, title_to_factors):
     if username not in df_matrix.index:
         return None
     user_ratings = df_matrix.loc[username]
@@ -94,15 +88,16 @@ def build_user_profile_factors(username, df_matrix, movie_factors):
     if len(rated_movies) == 0:
         return None
     
-    first_key = next(iter(movie_factors.values()))
+    first_key = next(iter(title_to_factors.values()))
     factor_length = len(first_key)
     
     profile_vector = np.zeros(factor_length)
     valid_ratings_count = 0
     
     for movie, rating in rated_movies.items():
-        if movie in movie_factors:
-            factors = np.array(movie_factors[movie])
+        movie_clean = movie.strip()
+        if movie_clean in title_to_factors:
+            factors = np.array(title_to_factors[movie_clean])
             profile_vector += factors * rating
             valid_ratings_count += 1
             
@@ -111,19 +106,19 @@ def build_user_profile_factors(username, df_matrix, movie_factors):
         
     return profile_vector / valid_ratings_count
 
-def recommend_for_user_factors(username, profile, df_matrix, movie_factors, top_n=10):
+def recommend_for_user_factors(username, profile, df_matrix, title_to_factors, top_n=10):
     if profile is None:
         return []
     user_ratings = df_matrix.loc[username]
-    already_rated = set(user_ratings.dropna().index)
+    already_rated = set(m.strip() for m in user_ratings.dropna().index)
     
     scores = []
     profile_norm = np.linalg.norm(profile)
     if profile_norm == 0:
         return []
         
-    for movie, factors in movie_factors.items():
-        if movie in already_rated or movie not in my_movies:
+    for title, factors in title_to_factors.items():
+        if title in already_rated:
             continue
         movie_vector = np.array(factors)
         movie_norm = np.linalg.norm(movie_vector)
@@ -132,13 +127,13 @@ def recommend_for_user_factors(username, profile, df_matrix, movie_factors, top_
         
         dot_product = np.dot(profile, movie_vector)
         similarity = dot_product / (profile_norm * movie_norm)
-        scores.append((movie, similarity))
+        scores.append((title, similarity))
         
     scores.sort(key=lambda x: x[1], reverse=True)
     return scores[:top_n]
 
 # ── Surprise SVD Collaborative Filtering Logic ─────────
-def get_surprise_recommendations(username, all_ratings, top_n=10):
+def get_surprise_recommendations(username, all_ratings, title_to_factors, top_n=10):
     raw_data = []
     for user, movies in all_ratings.items():
         for movie, rating in movies.items():
@@ -157,7 +152,7 @@ def get_surprise_recommendations(username, all_ratings, top_n=10):
     
     user_ratings = all_ratings.get(username, {})
     predictions = []
-    for movie in my_movies.keys():
+    for movie in title_to_factors.keys():
         if movie not in user_ratings:
             pred = algo.predict(username, movie)
             match_score = (pred.est + 1) / 2.0
@@ -181,11 +176,7 @@ def index():
 
 @app.route("/movies", methods=["GET"])
 def get_movies():
-    global my_movies
-    movies_list = list(my_movies.values())
-    if not movies_list:
-        my_movies = load_movies()
-        movies_list = list(my_movies.values())
+    movies_list = [{"title": info.get("title")} for info in movie_factors.values()]
     return jsonify({"movies": movies_list})
 
 @app.route("/onboarding", methods=["GET"])
@@ -202,7 +193,7 @@ def get_onboarding():
 def rate_movie():
     if request.method == "POST":
         data = request.get_json(silent=True) or {}
-        username = data.get("username") or data.get("user_id") or request.args.get("username")
+        username = data.get("username") or data.get("user_id") or request.args.get("username") or request.args.get("user_id")
         movie = data.get("movie") or request.args.get("movie")
         rating = data.get("rating")
         if rating is None:
@@ -232,13 +223,9 @@ def rate_movie():
 
 @app.route("/recommend", methods=["GET"])
 def get_recommendations():
-    global my_movies
     username = request.args.get("username") or request.args.get("user_id")
     if not username:
         return jsonify({"status": "error", "message": "username query parameter is required"}), 400
-
-    if not my_movies:
-        my_movies = load_movies()
 
     try:
         # Load all ratings from Firestore
@@ -269,30 +256,29 @@ def get_recommendations():
 
         # check user rating counts
         user_ratings = all_ratings.get(username, {})
-        if len(user_ratings) < 3:
+        if len(user_ratings) < 5:
             return jsonify({"status": "onboarding", "recommendations": []})
 
         # Predict based on movie factors presence
         recommendations = []
-        if movie_factors:
+        if title_to_factors:
             df_matrix = pd.DataFrame(all_ratings).T
             df_matrix.index.name = "user"
             df_matrix.columns.name = "movie"
-            profile = build_user_profile_factors(username, df_matrix, movie_factors)
-            recommendations = recommend_for_user_factors(username, profile, df_matrix, movie_factors, top_n=10)
+            profile = build_user_profile_factors(username, df_matrix, title_to_factors)
+            recommendations = recommend_for_user_factors(username, profile, df_matrix, title_to_factors, top_n=10)
         else:
             # Fall back to surprise SVD model
-            recommendations = get_surprise_recommendations(username, all_ratings, top_n=10)
+            recommendations = get_surprise_recommendations(username, all_ratings, title_to_factors, top_n=10)
 
         # Format output
         formatted_recs = []
         for movie_title, score in recommendations[:10]:
-            movie_data = my_movies.get(movie_title, {})
             formatted_recs.append({
                 "title": movie_title,
-                "genres": movie_data.get("genres", []),
+                "genres": [],
                 "match": round(float(score), 2),
-                "poster_path": movie_data.get("poster_path", "")
+                "poster_path": ""
             })
 
         return jsonify({"status": "ok", "recommendations": formatted_recs})
